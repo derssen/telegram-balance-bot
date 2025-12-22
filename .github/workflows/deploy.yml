@@ -21,12 +21,13 @@ jobs:
             cd /home/bot/telegram-balance-bot/
             
             # 2. Скачиваем изменения
-            git pull origin main
+            git fetch --all
+            git reset --hard origin/main
             
             # 3. Активируем виртуальное окружение и обновляем библиотеки (если надо)
             source venv/bin/activate
             pip install -r requirements.txt
             
             # 4. Перезапускаем бота
-            # Для этого бот должен быть запущен через systemd (см. ниже)
-            systemctl restart estetico_balance_bot
+            sudo systemctl daemon-reload 
+            sudo systemctl restart estetico_balance_bot 
