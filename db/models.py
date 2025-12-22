@@ -1,87 +1,89 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime
 import pytz
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, text
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, AsyncEngine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.future import select
+
 from config import SETTINGS
 
-# Используем вашу таймзону
-TIMEZONE = pytz.timezone('Asia/Makassar') 
+# Define Timezone
+TIMEZONE = pytz.timezone('Asia/Makassar')
 
 Base = declarative_base()
 
 class Service(Base):
+    """Database model representing a tracked service."""
     __tablename__ = 'services'
     
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
     
-    # Мониторинг баланса
+    # Balance Monitoring
     last_balance = Column(Float, default=0.0)
     low_balance_alert_sent = Column(Boolean, default=False)
     
-    # Новые поля (согласно твоему скриншоту)
+    # Financial Configuration
     currency = Column(String, default="USD")     # USD, RUB, UAH
-    daily_cost = Column(Float, nullable=True)    # Расход в день
-    monthly_fee = Column(Float, nullable=True)   # Ежемесячный платеж
+    daily_cost = Column(Float, nullable=True)    # Estimated daily cost
+    monthly_fee = Column(Float, nullable=True)   # Fixed monthly fee
     
-    # Даты оповещений
+    # Alert Schedule
     next_alert_date = Column(DateTime, nullable=True) 
-    next_monthly_alert = Column(DateTime, nullable=True) # Для ежемесячных подписок
+    next_monthly_alert = Column(DateTime, nullable=True)
 
     def __repr__(self):
         return f"<Service(name='{self.name}', balance={self.last_balance})>"
 
-# Инициализация
-async def init_db(database_url: str):
+async def init_db(database_url: str) -> sessionmaker:
+    """Initialize the database engine and session factory."""
     engine = create_async_engine(database_url, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     
-    AsyncSessionLocal = sessionmaker(
+    async_session = sessionmaker(
         autocommit=False,
         autoflush=False,
         bind=engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
-    return AsyncSessionLocal
+    return async_session
 
-# Вспомогательная функция для добавления начальных данных
-async def initialize_services(SessionLocal):
-    async with SessionLocal() as session:
-        # --- simple sqlite migration to add new columns if missing ---
+async def initialize_services(session_factory) -> None:
+    """
+    Populate the database with default services and perform schema migrations if necessary.
+    """
+    async with session_factory() as session:
+        # 1. Simple schema migration (add columns if missing)
         pragma_stmt = text("PRAGMA table_info(services)")
         result = await session.execute(pragma_stmt)
-        columns = {row[1] for row in result.fetchall()}
+        existing_columns = {row[1] for row in result.fetchall()}
 
         alter_statements = []
-        if 'currency' not in columns:
-            alter_statements.append("ALTER TABLE services ADD COLUMN currency VARCHAR")
-        if 'daily_cost' not in columns:
-            alter_statements.append("ALTER TABLE services ADD COLUMN daily_cost FLOAT")
-        if 'monthly_fee' not in columns:
-            alter_statements.append("ALTER TABLE services ADD COLUMN monthly_fee FLOAT")
-        if 'next_monthly_alert' not in columns:
-            alter_statements.append("ALTER TABLE services ADD COLUMN next_monthly_alert DATETIME")
+        required_columns = ['currency', 'daily_cost', 'monthly_fee', 'next_monthly_alert']
+        
+        for col in required_columns:
+            if col not in existing_columns:
+                col_type = 'DATETIME' if 'next' in col else ('FLOAT' if 'cost' in col or 'fee' in col else 'VARCHAR')
+                alter_statements.append(f"ALTER TABLE services ADD COLUMN {col} {col_type}")
 
         for stmt in alter_statements:
             try:
                 await session.execute(text(stmt))
             except Exception:
-                # ignore if already exists or other minor issues
-                pass
+                pass # Ignore errors if column exists
+        
         if alter_statements:
             await session.commit()
 
-        services_to_add = [
-            # API сервисы
+        # 2. Seed default data
+        services_to_seed = [
             {
                 'name': 'Zadarma',
                 'last_balance': 0.0,
                 'currency': SETTINGS.SERVICE_CURRENCIES.get('Zadarma', 'USD'),
             },
-            # Wazzup разделён: подписка (ежемесячно) и баланс номера (ежедневный расход)
             {
                 'name': 'Wazzup24 Подписка',
                 'last_balance': 0.0,
@@ -103,14 +105,12 @@ async def initialize_services(SessionLocal):
                 'monthly_fee': SETTINGS.DIDWW_MONTHLY_FEE,
                 'next_monthly_alert': TIMEZONE.localize(datetime(2025, 12, 20, 10, 0)),
             },
-            # Callii (Управляемый FSM)
             {
                 'name': 'Callii',
                 'next_alert_date': TIMEZONE.localize(datetime(2025, 12, 11, 10, 0)),
                 'currency': SETTINGS.SERVICE_CURRENCIES.get('Callii', 'USD'),
                 'daily_cost': SETTINGS.CALLII_DAILY_COST,
             }, 
-            # Streamtele (Ежемесячное напоминание)
             {
                 'name': 'Streamtele',
                 'currency': SETTINGS.SERVICE_CURRENCIES.get('Streamtele', 'UAH'),
@@ -119,10 +119,7 @@ async def initialize_services(SessionLocal):
             },
         ]
 
-        from sqlalchemy.future import select # Дополнительный импорт нужен для 'select'
-        
-        for data in services_to_add:
-            # ИСПРАВЛЕНО: Используем select и where для поиска по уникальному полю 'name'
+        for data in services_to_seed:
             stmt = select(Service).filter(Service.name == data['name'])
             result = await session.execute(stmt)
             exists = result.scalar_one_or_none()
