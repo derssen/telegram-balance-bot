@@ -1,6 +1,7 @@
 import aiohttp
 import hashlib
 import hmac
+import base64 # Добавили
 import logging
 from abc import ABC, abstractmethod
 from config import SETTINGS

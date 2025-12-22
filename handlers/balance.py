@@ -17,64 +17,88 @@ CURRENCY_SYMBOLS = {
     'UAH': '₴'
 }
 
+# Жесткий порядок отображения (как ты привык)
+DISPLAY_ORDER = [
+    'Zadarma',
+    'DIDWW',
+    'Streamtele',
+    'Callii',
+    'Wazzup24 Подписка',
+    'Wazzup24 Баланс номера'
+]
+
 @router.message(Command("balance"))
 async def handle_balance_command(message: Message, session: AsyncSession):
     
     response_parts = ["💰 **Текущие балансы сервисов:**"]
     
-    # 1. Загружаем ВСЕ сервисы из БД
-    stmt = select(Service).order_by(Service.id)
+    # 1. Загружаем сервисы
+    stmt = select(Service)
     result = await session.execute(stmt)
-    services = result.scalars().all()
-
-    if not services:
-        await message.answer("Сервисы не найдены в базе данных.")
-        return
-
-    for service in services:
-        # Получаем красивый символ валюты
-        currency_symbol = CURRENCY_SYMBOLS.get(service.currency, service.currency or '$')
+    services_unsorted = result.scalars().all()
+    
+    # Превращаем в словарь для удобной сортировки: { 'Zadarma': ServiceObj, ... }
+    services_map = {s.name: s for s in services_unsorted}
+    
+    # 2. Проходимся строго по нашему списку порядка
+    for name in DISPLAY_ORDER:
+        service = services_map.get(name)
+        if not service:
+            continue # Если вдруг сервиса нет в базе, пропускаем
+            
+        # Получаем символ валюты
+        sym = CURRENCY_SYMBOLS.get(service.currency, '$')
         
-        # --- Логика для API сервисов ---
-        # Если имя сервиса есть в списке API клиентов, пробуем обновить баланс
-        # НО! Wazzup у тебя разбит на две части в БД. API клиент возвращает только один баланс.
-        # Поэтому API опрашиваем только если точное совпадение имени или особая логика.
+        # Переменные для вывода
+        display_amount = 0.0
+        status_suffix = ""
+        is_subscription = False
         
-        real_balance = None
-        is_api = False
+        # --- ЛОГИКА ОПРЕДЕЛЕНИЯ ТИПА ---
         
-        if service.name in API_CLIENTS and SETTINGS.API_SERVICE_STATUSES.get(service.name, True):
+        # A. Это API сервис? (Zadarma, DIDWW)
+        if name in API_CLIENTS and SETTINGS.API_SERVICE_STATUSES.get(name, True):
             try:
-                client = API_CLIENTS[service.name]
+                client = API_CLIENTS[name]
                 real_balance = await client.get_balance()
                 
-                # Обновляем в БД, чтобы данные были свежими
+                # Обновляем БД
                 service.last_balance = real_balance
-                is_api = True
+                await session.commit()
+                
+                display_amount = real_balance
+                status_suffix = "(API)"
             except Exception:
-                # Если ошибка API, используем то, что было в базе
-                real_balance = service.last_balance
+                display_amount = service.last_balance
+                status_suffix = "(Ошибка API)"
+        
+        # B. Это подписка? (Есть monthly_fee и это НЕ API сервис)
+        # Пример: Streamtele, Wazzup24 Подписка
+        elif service.monthly_fee and service.monthly_fee > 0:
+            display_amount = service.monthly_fee
+            # Формируем строку как в старом отчете: "Подписка: ₴1500.00"
+            # Для этого suffix оставляем пустым, а префикс добавим в line
+            is_subscription = True
+            
+        # C. Это обычный ручной счет? (Callii, Wazzup24 Баланс номера)
         else:
-            # Для ручных сервисов (Callii, Streamtele, Wazzup Подписки) берем из БД
-            real_balance = service.last_balance
+            display_amount = service.last_balance
+            status_suffix = "(примерно)"
 
-        # Сохраняем обновление в БД
-        await session.commit()
-
-        # --- Формирование строки вывода ---
+        # --- ФОРМИРОВАНИЕ СТРОКИ ---
         
-        status_text = "(API)" if is_api else "(примерно)"
-        # Если это подписка (есть monthly_fee), меняем формат вывода
-        if service.monthly_fee and service.monthly_fee > 0:
-             status_text = f"Подписка: {currency_symbol}{service.monthly_fee:.2f}"
-        
-        line = f"• **{service.name}:** {currency_symbol}{real_balance:.2f} {status_text}"
+        if is_subscription:
+            # Особый формат для подписок: "• Streamtele: Подписка: ₴1500.00"
+            # Обрати внимание: суффикса нет, слово "Подписка" внутри значения
+            line = f"• **{name}:** Подписка: {sym}{display_amount:.2f}"
+        else:
+            # Стандартный формат: "• Zadarma: $0.00 (API)"
+            line = f"• **{name}:** {sym}{display_amount:.2f} {status_suffix}"
+            
         response_parts.append(line)
 
-        # Добавляем дату следующей оплаты, если есть
-        # Приоритет: next_alert_date (для Callii) или next_monthly_alert (для подписок)
+        # Добавляем дату (если есть) с отступом
         alert_date = service.next_alert_date or service.next_monthly_alert
-        
         if alert_date:
             date_str = alert_date.strftime('%Y-%m-%d')
             response_parts.append(f"  _След. оплата:_ {date_str}")
