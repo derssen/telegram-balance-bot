@@ -6,7 +6,7 @@ import pytz
 from config import SETTINGS
 
 # Используем вашу таймзону
-TIMEZONE = pytz.timezone('Europe/Kyiv') 
+TIMEZONE = pytz.timezone('Asia/Makassar') 
 
 Base = declarative_base()
 
@@ -19,14 +19,16 @@ class Service(Base):
     # Мониторинг баланса
     last_balance = Column(Float, default=0.0)
     low_balance_alert_sent = Column(Boolean, default=False)
-    currency = Column(String, default='USD')
-    daily_cost = Column(Float, nullable=True)
-    monthly_fee = Column(Float, nullable=True)
     
-    # Для Callii и Streamtele
+    # Новые поля (согласно твоему скриншоту)
+    currency = Column(String, default="USD")     # USD, RUB, UAH
+    daily_cost = Column(Float, nullable=True)    # Расход в день
+    monthly_fee = Column(Float, nullable=True)   # Ежемесячный платеж
+    
+    # Даты оповещений
     next_alert_date = Column(DateTime, nullable=True) 
-    next_monthly_alert = Column(DateTime, nullable=True)
-    
+    next_monthly_alert = Column(DateTime, nullable=True) # Для ежемесячных подписок
+
     def __repr__(self):
         return f"<Service(name='{self.name}', balance={self.last_balance})>"
 

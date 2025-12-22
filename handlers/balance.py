@@ -3,81 +3,80 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from db.models import Service, TIMEZONE
+from db.models import Service
 from services.api_clients import API_CLIENTS
-from config import SETTINGS # Новый импорт
+from config import SETTINGS
 
 router = Router()
 
-CURRENCY_SIGNS = SETTINGS.CURRENCY_SIGNS
-MANUAL_APPROX_VALUES = {
-    'Streamtele': SETTINGS.STREAMTELE_MONTHLY_FEE,
-    'Callii': 10.0,
-    'Wazzup24 Подписка': SETTINGS.WAZZUP_MONTHLY_FEE,
-    'Wazzup24 Баланс номера': SETTINGS.WAZZUP_DAILY_COST,
+# Карта символов валют
+CURRENCY_SYMBOLS = {
+    'USD': '$',
+    'EUR': '€',
+    'RUB': '₽',
+    'UAH': '₴'
 }
-MANUAL_SERVICES = ('Streamtele', 'Callii', 'Wazzup24 Подписка', 'Wazzup24 Баланс номера')
 
 @router.message(Command("balance"))
 async def handle_balance_command(message: Message, session: AsyncSession):
     
     response_parts = ["💰 **Текущие балансы сервисов:**"]
     
-    # --- 1. Проверка API-сервисов ---
-    for service_name, client in API_CLIENTS.items():
+    # 1. Загружаем ВСЕ сервисы из БД
+    stmt = select(Service).order_by(Service.id)
+    result = await session.execute(stmt)
+    services = result.scalars().all()
+
+    if not services:
+        await message.answer("Сервисы не найдены в базе данных.")
+        return
+
+    for service in services:
+        # Получаем красивый символ валюты
+        currency_symbol = CURRENCY_SYMBOLS.get(service.currency, service.currency or '$')
         
-        if not SETTINGS.API_SERVICE_STATUSES.get(service_name, False):
-            # Сервис отключен
-            response_parts.append(f"• **{service_name}:** _Отключен в конфигурации_ 🚫")
-            continue
-            
-        try:
-            current_balance = await client.get_balance()
-            if current_balance is None:
-                response_parts.append(f"• **{service_name}:** _Баланс через API недоступен_ ⚙️")
-            else:
-                currency = SETTINGS.SERVICE_CURRENCIES.get(service_name, 'USD')
-                symbol = CURRENCY_SIGNS.get(currency, currency)
-                response_parts.append(f"• **{service_name}:** `{symbol}{current_balance:.2f}` (API)")
-        except Exception as e:
-            response_parts.append(f"• **{service_name}:** Ошибка API (см. логи)")
+        # --- Логика для API сервисов ---
+        # Если имя сервиса есть в списке API клиентов, пробуем обновить баланс
+        # НО! Wazzup у тебя разбит на две части в БД. API клиент возвращает только один баланс.
+        # Поэтому API опрашиваем только если точное совпадение имени или особая логика.
+        
+        real_balance = None
+        is_api = False
+        
+        if service.name in API_CLIENTS and SETTINGS.API_SERVICE_STATUSES.get(service.name, True):
+            try:
+                client = API_CLIENTS[service.name]
+                real_balance = await client.get_balance()
+                
+                # Обновляем в БД, чтобы данные были свежими
+                service.last_balance = real_balance
+                is_api = True
+            except Exception:
+                # Если ошибка API, используем то, что было в базе
+                real_balance = service.last_balance
+        else:
+            # Для ручных сервисов (Callii, Streamtele, Wazzup Подписки) берем из БД
+            real_balance = service.last_balance
 
-    # --- 2. Проверка ручных сервисов ---
-    stmt = select(Service).where(Service.name.in_(MANUAL_SERVICES))
-    manual_result = await session.execute(stmt)
-    manual_services = {service.name: service for service in manual_result.scalars()}
+        # Сохраняем обновление в БД
+        await session.commit()
 
-    for name in MANUAL_SERVICES:
-        approx = MANUAL_APPROX_VALUES.get(name, 0.0)
-        service = manual_services.get(name)
-        currency = SETTINGS.SERVICE_CURRENCIES.get(name, 'USD')
-        symbol = CURRENCY_SIGNS.get(currency, currency)
+        # --- Формирование строки вывода ---
+        
+        status_text = "(API)" if is_api else "(примерно)"
+        # Если это подписка (есть monthly_fee), меняем формат вывода
+        if service.monthly_fee and service.monthly_fee > 0:
+             status_text = f"Подписка: {currency_symbol}{service.monthly_fee:.2f}"
+        
+        line = f"• **{service.name}:** {currency_symbol}{real_balance:.2f} {status_text}"
+        response_parts.append(line)
 
-        if name == 'Callii':
-            next_date = service.next_alert_date.astimezone(TIMEZONE).strftime('%Y-%m-%d') if service and service.next_alert_date else "N/A"
-            response_parts.append(
-                f"• **{name}:** `{symbol}{approx:.2f}` (примерно)\n"
-                f"  _След. оплата:_ **{next_date}**"
-            )
-        elif name == 'Streamtele':
-            next_monthly = service.next_monthly_alert.astimezone(TIMEZONE).strftime('%Y-%m-%d') if service and service.next_monthly_alert else "N/A"
-            response_parts.append(
-                f"• **{name}:** Подписка: `{symbol}{approx:.2f}`)\n"
-                f"  _След. оплата:_ **{next_monthly}**"
-            )
-        elif name == 'Wazzup24 Подписка':
-            next_monthly = service.next_monthly_alert.astimezone(TIMEZONE).strftime('%Y-%m-%d') if service and service.next_monthly_alert else "N/A"
-            response_parts.append(
-                f"• **{name}:** `{symbol}{approx:.2f}`\n"
-                f"  _След. оплата:_ **{next_monthly}**"
-            )
-        elif name == 'Wazzup24 Баланс номера':
-            next_daily = service.next_alert_date.astimezone(TIMEZONE).strftime('%Y-%m-%d') if service and service.next_alert_date else "N/A"
-            current_balance = service.last_balance if service and service.last_balance is not None else approx
-            response_parts.append(
-                f"• **{name}:** `{symbol}{current_balance:.1f}`\n"
-                f"  _След. оплата:_ **{next_daily}**"
-            )
-
+        # Добавляем дату следующей оплаты, если есть
+        # Приоритет: next_alert_date (для Callii) или next_monthly_alert (для подписок)
+        alert_date = service.next_alert_date or service.next_monthly_alert
+        
+        if alert_date:
+            date_str = alert_date.strftime('%Y-%m-%d')
+            response_parts.append(f"  _След. оплата:_ {date_str}")
 
     await message.answer('\n'.join(response_parts))
