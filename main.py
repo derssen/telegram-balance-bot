@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime  # <--- Добавлено
 from typing import Callable, Awaitable, Dict, Any
 
 from aiogram import Bot, Dispatcher, types, BaseMiddleware
@@ -10,7 +11,8 @@ from aiogram.types import TelegramObject
 
 from config import SETTINGS
 from db.models import init_db, initialize_services
-from scheduler.jobs import check_api_balances, check_planned_alerts
+# Импортируем новую функцию deduct_daily_balances
+from scheduler.jobs import check_api_balances, check_planned_alerts, deduct_daily_balances 
 from handlers import callii as callii_handlers
 from handlers import balance as balance_handlers
 from handlers import wazzup as wazzup_handlers
@@ -70,40 +72,38 @@ class DBSessionMiddleware(BaseMiddleware):
 
 async def scheduler_loop(bot: Bot, session_factory):
     """
-    Background loop for scheduled tasks (API checks and Alerts).
+    Background loop for scheduled tasks.
     """
-    # Intervals in seconds
-    API_CHECK_INTERVAL = 3600  # 1 hour
-    PLANNED_ALERT_CHECK_INTERVAL = 600 # 10 minutes
+    API_CHECK_INTERVAL = 3600
+    PLANNED_ALERT_CHECK_INTERVAL = 600
+    
+    # Variable to track if we already deducted balance today
+    last_deduction_date = None
 
     while True:
         try:
-            # Task 1: Check API Balances
+            # Используем время сервера (без TIMEZONE)
+            now = datetime.now()
+            
+            # --- 1. Daily Deduction Logic (Runs once per day when date changes) ---
+            if last_deduction_date != now.date():
+                async with session_factory() as session:
+                    await deduct_daily_balances(session)
+                last_deduction_date = now.date()
+                logger.info("Daily balances deducted.")
+
+            # --- 2. Existing Tasks ---
             async with session_factory() as session:
                 await check_api_balances(bot, session)
             
-            # Wait before next API check (Using short sleep loop logic if strictly required, 
-            # but simpler here to just wait for the planned alert check to keep loop alive)
+            await asyncio.sleep(60) 
             
-            # Note: To avoid blocking the loop for a full hour, we check planned alerts more frequently.
-            # In a production environment with this specific loop structure, we need to manage timing carefully.
-            # For simplicity based on previous code, we run them sequentially but we should ideally separate them.
-            
-            # Re-implementation for non-blocking concurrency would be better, 
-            # but strictly following the provided pattern:
-            
-            await asyncio.sleep(60) # Small buffer
-            
-            # Task 2: Check Planned Alerts
             async with session_factory() as session:
                 await check_planned_alerts(bot, session)
                 
-            # Wait remainder of cycle (This is a simplified logic from the original file)
-            # A more robust approach uses apscheduler, but per instructions, we keep this structure.
             await asyncio.sleep(PLANNED_ALERT_CHECK_INTERVAL)
 
         except asyncio.CancelledError:
-            logger.info("Scheduler loop cancelled.")
             break
         except Exception as e:
             logger.error(f"Scheduler error: {e}", exc_info=True)

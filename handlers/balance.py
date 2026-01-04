@@ -14,13 +14,15 @@ CURRENCY_SYMBOLS = {
     'USD': '$',
     'EUR': '€',
     'RUB': '₽',
-    'UAH': '₴'
+    'UAH': '₴',
+    'Ops': '⚡',
 }
 
-# Display order configuration
+# Added 'Make' to the list
 DISPLAY_ORDER = [
     'Zadarma',
     'DIDWW',
+    'Make',
     'Streamtele',
     'Callii',
     'Wazzup24 Подписка',
@@ -29,37 +31,29 @@ DISPLAY_ORDER = [
 
 @router.message(Command("balance"))
 async def handle_balance_command(message: Message, session: AsyncSession):
-    """
-    Handles /balance command. Fetches data from APIs and DB to show a summary.
-    """
+    """Handles /balance command."""
     response_parts = ["💰 **Текущие балансы сервисов:**"]
     
-    # 1. Fetch all services
     stmt = select(Service)
     result = await session.execute(stmt)
     services_unsorted = result.scalars().all()
-    
     services_map = {s.name: s for s in services_unsorted}
     
-    # 2. Iterate based on predefined order
     for name in DISPLAY_ORDER:
         service = services_map.get(name)
-        if not service:
-            continue
+        if not service: continue
             
         sym = CURRENCY_SYMBOLS.get(service.currency, '$')
-        
         display_amount = 0.0
         status_suffix = ""
         is_subscription = False
         
-        # A. API Services (Zadarma, DIDWW)
+        # A. API Services
         if name in API_CLIENTS and SETTINGS.API_SERVICE_STATUSES.get(name, True):
             try:
                 client = API_CLIENTS[name]
                 real_balance = await client.get_balance()
                 
-                # Update DB with fresh data
                 if real_balance is not None:
                     service.last_balance = real_balance
                     await session.commit()
@@ -68,33 +62,35 @@ async def handle_balance_command(message: Message, session: AsyncSession):
                 else:
                     display_amount = service.last_balance
                     status_suffix = "(Ошибка API)"
-
             except Exception:
                 display_amount = service.last_balance
                 status_suffix = "(Сбой API)"
         
-        # B. Subscription Services
+        # B. Subscriptions
         elif service.monthly_fee and service.monthly_fee > 0:
             display_amount = service.monthly_fee
             is_subscription = True
-            
-        # C. Manual Balance Services
+        
+        # C. Manual
         else:
             display_amount = service.last_balance
             status_suffix = "(примерно)"
 
-        # Formatting Output
+        # Formatting
+        amount_fmt = f"{int(display_amount)}" if service.currency == 'Ops' else f"{display_amount:.2f}"
+        
         if is_subscription:
-            line = f"• **{name}:** Подписка: {sym}{display_amount:.2f}"
+            line = f"• **{name}:** Подписка: `{sym}{amount_fmt}`"
         else:
-            line = f"• **{name}:** {sym}{display_amount:.2f} {status_suffix}"
+            line = f"• **{name}:** `{sym}{amount_fmt}` {status_suffix}"
             
         response_parts.append(line)
 
-        # Append Next Alert Date if available
+        # Alerts
         alert_date = service.next_alert_date or service.next_monthly_alert
         if alert_date:
             date_str = alert_date.strftime('%Y-%m-%d')
-            response_parts.append(f"  _След. оплата:_ {date_str}")
+            label = "Сброс:" if name == 'Make' else "След. оплата:"
+            response_parts.append(f"  _{label}_ {date_str}")
 
     await message.answer('\n'.join(response_parts))

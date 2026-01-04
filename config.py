@@ -20,6 +20,10 @@ class Config:
     WAZZUP_TOKEN: str = os.getenv("WAZZUP_TOKEN")
     DIDWW_KEY: str = os.getenv("DIDWW_KEY")
     
+    # NEW: Make Credentials
+    MAKE_API_KEY: str = os.getenv("MAKE_API_KEY")
+    MAKE_ORG_ID: str = os.getenv("MAKE_ORG_ID")
+    
     # Financial Constants
     LOW_BALANCE_THRESHOLD: float = 10.0
     MIN_TOP_UP_AMOUNT: float = 5.0
@@ -42,22 +46,24 @@ class Config:
         'DIDWW': 'USD',
         'Streamtele': 'UAH',
         'Callii': 'USD',
+        'Make': 'Ops',  # Operations
     }
     
     CURRENCY_SIGNS: dict = {
         'USD': '$',
         'UAH': '₴',
         'RUB': '₽',
+        'Ops': '⚡', # Icon for operations
     }
     
     # API Service Toggle
     API_SERVICE_STATUSES: dict = {
         'Zadarma': os.getenv("ZADARMA_ENABLED", "True").lower() in ('true', '1', 't'),
         'DIDWW': os.getenv("DIDWW_ENABLED", "True").lower() in ('true', '1', 't'),
+        'Make': os.getenv("MAKE_ENABLED", "True").lower() in ('true', '1', 't'),
     }
 
 SETTINGS = Config()
 
-# Validation
 if not SETTINGS.BOT_TOKEN or SETTINGS.TARGET_CHAT_ID == -1:
     raise ValueError("Critical configuration missing: BOT_TOKEN or TARGET_CHAT_ID.")
