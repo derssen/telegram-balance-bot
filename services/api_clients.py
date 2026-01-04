@@ -5,7 +5,6 @@ import base64
 import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
-from datetime import datetime
 from config import SETTINGS
 
 logger = logging.getLogger(__name__)
@@ -63,7 +62,6 @@ class DIDWWClient(BaseClient):
                 async with session.get(f"{self.api_url}balance") as response:
                     if response.status != 200: return None
                     data = await response.json()
-                    # Safe extraction logic
                     attrs = {}
                     if 'data' in data:
                         d = data['data']
@@ -75,15 +73,14 @@ class DIDWWClient(BaseClient):
 
 class MakeClient(BaseClient):
     """
-    Client for Make (formerly Integromat) API.
-    Fetches operation usage and subscription renewal dates.
+    Client for Make (Integromat) API.
     """
     def __init__(self):
         self.token = SETTINGS.MAKE_API_KEY
         self.org_id = SETTINGS.MAKE_ORG_ID
-        # Using EU1 by default, but this should ideally match the user's region
-        self.api_url = f"https://eu1.make.com/api/v2/organizations/{self.org_id}"
-        self.cached_details = {} # To store details for the advanced check
+        self.zone = SETTINGS.MAKE_ZONE # eu1 or us1
+        self.api_url = f"https://{self.zone}.make.com/api/v2/organizations/{self.org_id}"
+        self.cached_details = {}
 
     async def get_details(self) -> Optional[Dict[str, Any]]:
         """Fetches full license details including usage and reset dates."""
@@ -96,13 +93,22 @@ class MakeClient(BaseClient):
                         return None
                     
                     data = await response.json()
-                    license_data = data.get('license', {})
-                    limits = license_data.get('limits', {}).get('operations', {})
                     
+                    # Log removed to reduce noise after fix, but structure is:
+                    # { 'organization': { 'operations': '14851', 'nextReset': '...', 'license': { 'operations': 20000 } } }
+                    
+                    org = data.get('organization', {})
+                    license_info = org.get('license', {})
+
+                    # Parsing logic based on provided logs
+                    usage = float(org.get('operations', 0)) # Value is string in JSON
+                    limit = float(license_info.get('operations', 0)) # Value is int/float
+                    reset_at = org.get('nextReset')
+
                     return {
-                        'usage': limits.get('usage', 0),
-                        'limit': limits.get('limit', 0),
-                        'reset_at': license_data.get('resetAt') # ISO String
+                        'usage': usage,
+                        'limit': limit,
+                        'reset_at': reset_at 
                     }
         except Exception as e:
             logger.error(f"Make API Connection Error: {e}")
@@ -112,13 +118,16 @@ class MakeClient(BaseClient):
         """Returns REMAINING operations."""
         details = await self.get_details()
         if details:
-            # Cache details for the scheduler to use immediately after
             self.cached_details = details
-            remaining = details['limit'] - details['usage']
+            
+            limit = details.get('limit', 0)
+            usage = details.get('usage', 0)
+            remaining = limit - usage
+            
+            logger.info(f"Make Calc: Limit {limit} - Usage {usage} = {remaining}")
             return float(remaining)
         return None
 
-# Service Registry
 API_CLIENTS = {
     'Zadarma': ZadarmaClient(),
     'DIDWW': DIDWWClient(),

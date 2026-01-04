@@ -12,7 +12,7 @@ class Config:
     TARGET_CHAT_ID: int = int(os.getenv("TARGET_CHAT_ID", -1))
     
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///balances.sqlite3")
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot_db.sqlite3")
     
     # API Credentials
     ZADARMA_KEY: str = os.getenv("ZADARMA_KEY")
@@ -20,9 +20,10 @@ class Config:
     WAZZUP_TOKEN: str = os.getenv("WAZZUP_TOKEN")
     DIDWW_KEY: str = os.getenv("DIDWW_KEY")
     
-    # NEW: Make Credentials
+    # Make Credentials & Config
     MAKE_API_KEY: str = os.getenv("MAKE_API_KEY")
     MAKE_ORG_ID: str = os.getenv("MAKE_ORG_ID")
+    MAKE_ZONE: str = os.getenv("MAKE_ZONE", "eu1") # eu1 or us1
     
     # Financial Constants
     LOW_BALANCE_THRESHOLD: float = 10.0
@@ -46,21 +47,21 @@ class Config:
         'DIDWW': 'USD',
         'Streamtele': 'UAH',
         'Callii': 'USD',
-        'Make': 'Ops',  # Operations
+        'Make': 'Ops',
     }
     
     CURRENCY_SIGNS: dict = {
         'USD': '$',
         'UAH': '₴',
         'RUB': '₽',
-        'Ops': '⚡', # Icon for operations
+        'Ops': '⚡',
     }
     
-    # API Service Toggle
+    # API Service Toggle (Auto-detect based on keys)
     API_SERVICE_STATUSES: dict = {
-        'Zadarma': os.getenv("ZADARMA_ENABLED", "True").lower() in ('true', '1', 't'),
-        'DIDWW': os.getenv("DIDWW_ENABLED", "True").lower() in ('true', '1', 't'),
-        'Make': os.getenv("MAKE_ENABLED", "True").lower() in ('true', '1', 't'),
+        'Zadarma': bool(os.getenv("ZADARMA_KEY") and os.getenv("ZADARMA_SECRET")),
+        'DIDWW': bool(os.getenv("DIDWW_KEY")),
+        'Make': bool(os.getenv("MAKE_API_KEY") and os.getenv("MAKE_ORG_ID")),
     }
 
 SETTINGS = Config()
